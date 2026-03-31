@@ -15,8 +15,14 @@ import { PORTLESS_HEADER } from "./proxy.js";
 /** True when running on Windows. */
 export const isWindows = process.platform === "win32";
 
-/** Default proxy port. Uses an unprivileged port so sudo is not required. */
-export const DEFAULT_PROXY_PORT = 1355;
+/** Unprivileged fallback port used when standard ports are unavailable. */
+export const FALLBACK_PROXY_PORT = 1355;
+
+/**
+ * @deprecated Use FALLBACK_PROXY_PORT instead. Kept for backward compatibility
+ * with tests and external consumers.
+ */
+export const DEFAULT_PROXY_PORT = FALLBACK_PROXY_PORT;
 
 /** Ports below this threshold require root/sudo to bind (Unix only). */
 export const PRIVILEGED_PORT_THRESHOLD = 1024;
@@ -25,7 +31,7 @@ export const PRIVILEGED_PORT_THRESHOLD = 1024;
  * System-wide state directory (used when proxy needs sudo on Unix).
  * Hardcoded to /tmp/portless rather than os.tmpdir() because macOS returns
  * a per-user dir from os.tmpdir() (/var/folders/...) while sudo (root)
- * gets /tmp -- causing the proxy writer and client reader to disagree.
+ * gets /tmp, causing the proxy writer and client reader to disagree.
  */
 export const SYSTEM_STATE_DIR = isWindows ? path.join(os.tmpdir(), "portless") : "/tmp/portless";
 
@@ -68,16 +74,26 @@ export const SIGNAL_CODES: Record<string, number> = {
 // ---------------------------------------------------------------------------
 
 /**
- * Return the effective default proxy port. Reads the PORTLESS_PORT env var
- * first, falling back to DEFAULT_PROXY_PORT (1355).
+ * Return the protocol-standard port for the given scheme.
+ * HTTPS -> 443, HTTP -> 80.
  */
-export function getDefaultPort(): number {
+export function getProtocolPort(tls: boolean): number {
+  return tls ? 443 : 80;
+}
+
+/**
+ * Return the effective default proxy port. Reads the PORTLESS_PORT env var
+ * first, then falls back to the protocol-standard port (443 for HTTPS,
+ * 80 for HTTP). When `tls` is undefined the legacy fallback (1355) is used
+ * so callers that don't yet know the protocol get backward-compatible behavior.
+ */
+export function getDefaultPort(tls?: boolean): number {
   const envPort = process.env.PORTLESS_PORT;
   if (envPort) {
     const port = parseInt(envPort, 10);
     if (!isNaN(port) && port >= 1 && port <= 65535) return port;
   }
-  return DEFAULT_PROXY_PORT;
+  return tls === undefined ? FALLBACK_PROXY_PORT : getProtocolPort(tls);
 }
 
 // ---------------------------------------------------------------------------
@@ -141,15 +157,15 @@ export const DEFAULT_TLD = "localhost";
 export const RISKY_TLDS = new Map<string, string>([
   ["local", "conflicts with mDNS/Bonjour on macOS"],
   ["dev", "Google-owned; browsers force HTTPS via preloaded HSTS"],
-  ["com", "public TLD -- DNS requests will leak to the internet"],
-  ["org", "public TLD -- DNS requests will leak to the internet"],
-  ["net", "public TLD -- DNS requests will leak to the internet"],
-  ["io", "public TLD -- DNS requests will leak to the internet"],
-  ["app", "public TLD -- DNS requests will leak to the internet"],
-  ["edu", "public TLD -- DNS requests will leak to the internet"],
-  ["gov", "public TLD -- DNS requests will leak to the internet"],
-  ["mil", "public TLD -- DNS requests will leak to the internet"],
-  ["int", "public TLD -- DNS requests will leak to the internet"],
+  ["com", "public TLD; DNS requests will leak to the internet"],
+  ["org", "public TLD; DNS requests will leak to the internet"],
+  ["net", "public TLD; DNS requests will leak to the internet"],
+  ["io", "public TLD; DNS requests will leak to the internet"],
+  ["app", "public TLD; DNS requests will leak to the internet"],
+  ["edu", "public TLD; DNS requests will leak to the internet"],
+  ["gov", "public TLD; DNS requests will leak to the internet"],
+  ["mil", "public TLD; DNS requests will leak to the internet"],
+  ["int", "public TLD; DNS requests will leak to the internet"],
 ]);
 
 /**
@@ -204,11 +220,21 @@ export function getDefaultTld(): string {
 }
 
 /**
- * Return whether HTTPS mode is requested via the PORTLESS_HTTPS env var.
+ * @deprecated Use isHttpsEnvDisabled instead. HTTPS is now enabled by default;
+ * check whether it is disabled rather than enabled.
  */
 export function isHttpsEnvEnabled(): boolean {
   const val = process.env.PORTLESS_HTTPS;
   return val === "1" || val === "true";
+}
+
+/**
+ * Return whether HTTPS is explicitly disabled via the PORTLESS_HTTPS env var.
+ * PORTLESS_HTTPS=0 is the env-var equivalent of --no-tls.
+ */
+export function isHttpsEnvDisabled(): boolean {
+  const val = process.env.PORTLESS_HTTPS;
+  return val === "0" || val === "false";
 }
 
 /**
@@ -266,8 +292,10 @@ export async function discoverState(): Promise<{
   // State files didn't help. Probe well-known ports as a last resort --
   // privileged-port proxies store state in /tmp which macOS cleans on reboot,
   // so the daemon may still be alive after the port file is gone.
-  const defaultPort = getDefaultPort();
-  const probePorts = new Set([defaultPort, 443, 80]);
+  // Standard ports first (443, 80) since those are the new defaults, then the
+  // legacy fallback port, then any PORTLESS_PORT override.
+  const configuredPort = getDefaultPort();
+  const probePorts = new Set([443, 80, FALLBACK_PROXY_PORT, configuredPort]);
   for (const port of probePorts) {
     if (await isProxyRunning(port)) {
       const dir = resolveStateDir(port);
@@ -277,7 +305,12 @@ export async function discoverState(): Promise<{
     }
   }
 
-  return { dir: resolveStateDir(defaultPort), port: defaultPort, tls: false, tld: getDefaultTld() };
+  return {
+    dir: resolveStateDir(configuredPort),
+    port: configuredPort,
+    tls: false,
+    tld: getDefaultTld(),
+  };
 }
 
 // ---------------------------------------------------------------------------
