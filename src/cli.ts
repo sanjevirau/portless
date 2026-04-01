@@ -918,10 +918,21 @@ async function handleTrust(): Promise<void> {
     result.error?.includes("Permission denied") || result.error?.includes("EACCES");
   if (isPermissionError && !isWindows && process.getuid?.() !== 0) {
     console.log(colors.yellow("Trusting the CA requires elevated privileges. Requesting sudo..."));
-    const sudoResult = spawnSync("sudo", [process.execPath, getEntryScript(), "trust"], {
-      stdio: "inherit",
-      timeout: SUDO_SPAWN_TIMEOUT_MS,
-    });
+    const sudoResult = spawnSync(
+      "sudo",
+      [
+        "env",
+        ...collectPortlessEnvArgs(),
+        `PORTLESS_STATE_DIR=${dir}`,
+        process.execPath,
+        getEntryScript(),
+        "trust",
+      ],
+      {
+        stdio: "inherit",
+        timeout: SUDO_SPAWN_TIMEOUT_MS,
+      }
+    );
     if (sudoResult.status === 0) return;
     console.error(colors.red("sudo elevation also failed."));
   }
