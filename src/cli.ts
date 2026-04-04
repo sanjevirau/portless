@@ -563,15 +563,19 @@ async function runApp(
     console.log(colors.green(`-- Using port ${port}`));
   }
 
-  // Register route
+  // Register route (--force kills the existing owner if any)
+  let killedPid: number | undefined;
   try {
-    store.addRoute(hostname, port, process.pid, force);
+    killedPid = store.addRoute(hostname, port, process.pid, force);
   } catch (err) {
     if (err instanceof RouteConflictError) {
       console.error(colors.red(`Error: ${err.message}`));
       process.exit(1);
     }
     throw err;
+  }
+  if (killedPid !== undefined) {
+    console.log(colors.yellow(`Killed existing process (PID ${killedPid})`));
   }
 
   const finalUrl = formatUrl(hostname, proxyPort, tls);
@@ -674,7 +678,7 @@ ${colors.bold("Usage:")}
 
 ${colors.bold("Options:")}
   --name <name>          Override the inferred base name (worktree prefix still applies)
-  --force                Override an existing route registered by another process
+  --force                Kill the existing process and take over its route
   --app-port <number>    Use a fixed port for the app (skip auto-assignment)
   --help, -h             Show this help
 
@@ -852,7 +856,7 @@ ${colors.bold("Options:")}
   --tld <tld>                   Use a custom TLD instead of .localhost (e.g. test, dev)
   --wildcard                    Allow unregistered subdomains to fall back to parent route
   --app-port <number>           Use a fixed port for the app (skip auto-assignment)
-  --force                       Override an existing route registered by another process
+  --force                       Kill the existing process and take over its route
   --name <name>                 Use <name> as the app name (bypasses subcommand dispatch)
   --                            Stop flag parsing; everything after is passed to the child
 
