@@ -1336,7 +1336,7 @@ async function handleTrust(): Promise<void> {
   }
 
   // Auto-elevate with sudo on macOS/Linux, but only for permission errors.
-  // Non-permission failures (missing cert, unsupported platform) skip sudo.
+  // Non-permission failures (missing cert, unsupported platform, timeout) skip sudo.
   const isPermissionError =
     result.error?.includes("Permission denied") || result.error?.includes("EACCES");
   if (isPermissionError && !isWindows && process.getuid?.() !== 0) {
@@ -1754,6 +1754,7 @@ ${colors.bold("LAN mode (--lan):")}
   }
 
   const isForeground = args.includes("--foreground");
+  const skipTrust = args.includes("--skip-trust");
 
   // HTTPS is on by default. Disable with --no-tls or PORTLESS_HTTPS=0.
   const hasHttpsFlag = args.includes("--https");
@@ -2112,7 +2113,7 @@ ${colors.bold("LAN mode (--lan):")}
         console.log(colors.green("Generated local CA certificate."));
       }
 
-      if (!isCATrusted(stateDir)) {
+      if (!skipTrust && !isCATrusted(stateDir)) {
         console.log(colors.yellow("Adding CA to system trust store..."));
         const trustResult = trustCA(stateDir);
         if (trustResult.trusted) {
@@ -2178,6 +2179,7 @@ ${colors.bold("LAN mode (--lan):")}
         foreground: true,
         includePort: true,
         proxyPort,
+        skipTrust: true,
       }).args,
     ];
 

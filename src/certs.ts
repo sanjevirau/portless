@@ -21,6 +21,27 @@ const CA_COMMON_NAME = "portless Local CA";
 /** openssl command timeout (ms). */
 const OPENSSL_TIMEOUT_MS = 15_000;
 
+/**
+ * Timeout for non-interactive macOS `security` commands (verify-cert, etc.).
+ * Needs generous headroom because the Keychain Services daemon (`securityd`)
+ * can stall under load or after a macOS update.
+ */
+const MACOS_SECURITY_TIMEOUT_MS = 15_000;
+
+/**
+ * Timeout for macOS `security add-trusted-cert` (non-root).
+ * This command triggers a system GUI authorization dialog (Touch ID or
+ * password), so the user may need time to interact with it.
+ */
+const MACOS_SECURITY_AUTH_TIMEOUT_MS = 120_000;
+
+/**
+ * Timeout for macOS `security add-trusted-cert` as root.
+ * The `-d` flag writes to the admin cert store without a GUI dialog,
+ * but the keychain subsystem can still be slow.
+ */
+const MACOS_SECURITY_ROOT_TIMEOUT_MS = 60_000;
+
 // ---------------------------------------------------------------------------
 // File names
 // ---------------------------------------------------------------------------
@@ -423,13 +444,13 @@ function isCATrustedMacOS(caCertPath: string): boolean {
         ["-u", sudoUser, "security", "verify-cert", "-c", caCertPath, "-L", "-p", "ssl"],
         {
           stdio: "pipe",
-          timeout: 5000,
+          timeout: MACOS_SECURITY_TIMEOUT_MS,
         }
       );
     } else {
       execFileSync("security", ["verify-cert", "-c", caCertPath, "-L", "-p", "ssl"], {
         stdio: "pipe",
-        timeout: 5000,
+        timeout: MACOS_SECURITY_TIMEOUT_MS,
       });
     }
     return true;
@@ -445,7 +466,7 @@ function loginKeychainPath(): string {
   try {
     const result = execFileSync("security", ["default-keychain"], {
       encoding: "utf-8",
-      timeout: 5000,
+      timeout: MACOS_SECURITY_TIMEOUT_MS,
     }).trim();
     // Output is like:    "/Users/foo/Library/Keychains/login.keychain-db"
     const match = result.match(/"(.+)"/);
@@ -812,14 +833,14 @@ export function trustCA(stateDir: string): { trusted: boolean; error?: string } 
             "/Library/Keychains/System.keychain",
             caCertPath,
           ],
-          { stdio: "pipe", timeout: 30_000 }
+          { stdio: "pipe", timeout: MACOS_SECURITY_ROOT_TIMEOUT_MS }
         );
       } else {
         const keychain = loginKeychainPath();
         execFileSync(
           "security",
           ["add-trusted-cert", "-r", "trustRoot", "-k", keychain, caCertPath],
-          { stdio: "pipe", timeout: 30_000 }
+          { stdio: "pipe", timeout: MACOS_SECURITY_AUTH_TIMEOUT_MS }
         );
       }
       return { trusted: true };
@@ -842,6 +863,16 @@ export function trustCA(stateDir: string): { trusted: boolean; error?: string } 
     return { trusted: false, error: `Unsupported platform: ${process.platform}` };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("ETIMEDOUT")) {
+      const hint =
+        process.platform === "darwin"
+          ? "The macOS security command timed out. This can happen when the " +
+            "Keychain Services daemon is unresponsive or a system authorization " +
+            "dialog was not dismissed in time. Try restarting Keychain Access " +
+            "(or run: sudo killall securityd) and then: portless trust"
+          : "The trust command timed out. Try: portless trust";
+      return { trusted: false, error: hint };
+    }
     if (
       message.includes("authorization") ||
       message.includes("permission") ||
@@ -892,7 +923,7 @@ function untrustCAMacOS(caCertPath: string): { removed: boolean; error?: string 
 
   const tryExec = (args: string[]) => {
     try {
-      execFileSync("security", args, { stdio: "pipe", timeout: 30_000 });
+      execFileSync("security", args, { stdio: "pipe", timeout: MACOS_SECURITY_ROOT_TIMEOUT_MS });
       return true;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -925,12 +956,12 @@ function isCATrustedMacOSAfterAttempt(caCertPath: string): boolean {
       execFileSync(
         "sudo",
         ["-u", sudoUser, "security", "verify-cert", "-c", caCertPath, "-L", "-p", "ssl"],
-        { stdio: "pipe", timeout: 5000 }
+        { stdio: "pipe", timeout: MACOS_SECURITY_TIMEOUT_MS }
       );
     } else {
       execFileSync("security", ["verify-cert", "-c", caCertPath, "-L", "-p", "ssl"], {
         stdio: "pipe",
-        timeout: 5000,
+        timeout: MACOS_SECURITY_TIMEOUT_MS,
       });
     }
     return true;

@@ -318,6 +318,7 @@ export function buildProxyStartConfig(options: {
   foreground?: boolean;
   includePort?: boolean;
   proxyPort?: number;
+  skipTrust?: boolean;
 }): { effectiveTld: string; args: string[] } {
   const effectiveTld = options.lanMode ? "local" : options.tld;
   const args: string[] = [];
@@ -355,6 +356,10 @@ export function buildProxyStartConfig(options: {
 
   if (options.useWildcard) {
     args.push("--wildcard");
+  }
+
+  if (options.skipTrust) {
+    args.push("--skip-trust");
   }
 
   return { effectiveTld, args };

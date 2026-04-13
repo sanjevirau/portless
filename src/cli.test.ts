@@ -1000,4 +1000,71 @@ describe("CLI", () => {
       expect(stop.stdout).toContain("Proxy stopped");
     });
   });
+
+  describe("HTTPS proxy with broken security binary (#228)", () => {
+    let fakeBinDir: string;
+    let tmpDir: string;
+    let testPort: number;
+
+    beforeEach(async () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "portless-trust-timeout-"));
+      testPort = await getFreePort();
+
+      // Create a fake `security` binary that always fails, simulating the
+      // macOS Keychain Services daemon being unresponsive. The real issue
+      // (#228) is a slow/hanging securityd, but an instant failure exercises
+      // the same error-handling code path without making the test wait minutes.
+      fakeBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "portless-fake-bin-"));
+      const fakeSecurityPath = path.join(fakeBinDir, "security");
+      fs.writeFileSync(fakeSecurityPath, "#!/bin/sh\nexit 1\n");
+      fs.chmodSync(fakeSecurityPath, 0o755);
+    });
+
+    afterEach(() => {
+      run(["proxy", "stop", "-p", String(testPort)], {
+        env: { PORTLESS_STATE_DIR: tmpDir },
+      });
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      fs.rmSync(fakeBinDir, { recursive: true, force: true });
+    });
+
+    it.skipIf(process.platform !== "darwin")(
+      "starts HTTPS proxy when security commands fail",
+      () => {
+        const env = {
+          PORTLESS_PORT: String(testPort),
+          PORTLESS_STATE_DIR: tmpDir,
+          // Put fake security first in PATH; real openssl is still reachable
+          PATH: `${fakeBinDir}:${process.env.PATH}`,
+        };
+
+        // HTTPS is on by default (no PORTLESS_HTTPS=0), so this exercises
+        // cert generation, the failing trust check, and daemon startup.
+        const start = spawnSync(process.execPath, [CLI_PATH, "proxy", "start"], {
+          encoding: "utf-8",
+          timeout: 30_000,
+          env: { ...process.env, ...env, NO_COLOR: "1" },
+        });
+
+        // The proxy should start despite the broken security binary.
+        // Before the fix, the daemon would re-run the failing trust flow,
+        // potentially stalling long enough for waitForProxy to time out.
+        // After the fix, the parent passes --skip-trust to the daemon.
+        expect(start.status).toBe(0);
+        expect(start.stdout).toContain(`proxy started on port ${testPort}`);
+
+        // Parent should warn that trust failed
+        const combined = start.stdout + start.stderr;
+        expect(combined).toContain("Could not add CA to system trust store");
+
+        // Daemon log should NOT contain trust attempts (--skip-trust was passed)
+        const logPath = path.join(tmpDir, "proxy.log");
+        if (fs.existsSync(logPath)) {
+          const log = fs.readFileSync(logPath, "utf-8");
+          expect(log).not.toContain("Adding CA to system trust store");
+          expect(log).toContain("HTTPS/2 proxy listening");
+        }
+      }
+    );
+  });
 });
