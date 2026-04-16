@@ -564,6 +564,7 @@ function startProxyServer(
     }
     writeTlsMarker(store.dir, false);
     writeTldFile(store.dir, DEFAULT_TLD);
+    writeLanMarker(store.dir, null);
     if (autoSyncHosts) cleanHostsFile();
     server.close(() => process.exit(0));
     // Force exit after a short timeout in case connections don't drain
@@ -613,6 +614,9 @@ async function stopProxy(store: RouteStore, proxyPort: number, _tls: boolean): P
           } catch {
             // Port file may already be absent; non-fatal
           }
+          writeTlsMarker(store.dir, false);
+          writeTldFile(store.dir, DEFAULT_TLD);
+          writeLanMarker(store.dir, null);
           console.log(colors.green(`Killed process ${pid}. Proxy stopped.`));
         } catch (err: unknown) {
           if (isErrnoException(err) && err.code === "EPERM") {
@@ -650,6 +654,9 @@ async function stopProxy(store: RouteStore, proxyPort: number, _tls: boolean): P
     if (isNaN(pid)) {
       console.error(colors.red("Corrupted PID file. Removing it."));
       fs.unlinkSync(pidPath);
+      writeTlsMarker(store.dir, false);
+      writeTldFile(store.dir, DEFAULT_TLD);
+      writeLanMarker(store.dir, null);
       return;
     }
 
@@ -668,6 +675,9 @@ async function stopProxy(store: RouteStore, proxyPort: number, _tls: boolean): P
       } catch {
         // Port file may already be absent; non-fatal
       }
+      writeTlsMarker(store.dir, false);
+      writeTldFile(store.dir, DEFAULT_TLD);
+      writeLanMarker(store.dir, null);
       return;
     }
 
@@ -682,6 +692,9 @@ async function stopProxy(store: RouteStore, proxyPort: number, _tls: boolean): P
       );
       console.log(colors.yellow("Removing stale PID file."));
       fs.unlinkSync(pidPath);
+      writeTlsMarker(store.dir, false);
+      writeTldFile(store.dir, DEFAULT_TLD);
+      writeLanMarker(store.dir, null);
       return;
     }
 
@@ -692,6 +705,9 @@ async function stopProxy(store: RouteStore, proxyPort: number, _tls: boolean): P
     } catch {
       // Port file may already be removed; non-fatal
     }
+    writeTlsMarker(store.dir, false);
+    writeTldFile(store.dir, DEFAULT_TLD);
+    writeLanMarker(store.dir, null);
     console.log(colors.green("Proxy stopped."));
   } catch (err: unknown) {
     if (isErrnoException(err) && err.code === "EPERM") {
