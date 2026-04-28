@@ -31,6 +31,7 @@ import {
   discoverState,
   findFreePort,
   findPidOnPort,
+  findPidsOnPort,
   getDefaultPort,
   getDefaultTld,
   injectFrameworkFlags,
@@ -40,6 +41,7 @@ import {
   isLanEnvEnabled,
   isProxyRunning,
   isWindows,
+  killTree,
   readLanMarker,
   readPersistedProxyState,
   readTldFromDir,
@@ -1302,6 +1304,7 @@ ${colors.bold("Usage:")}
   ${colors.cyan("portless list")}                    Show active routes
   ${colors.cyan("portless trust")}                   Add local CA to system trust store
   ${colors.cyan("portless clean")}                   Remove portless state, trust entry, and hosts block
+  ${colors.cyan("portless prune")}                   Kill orphaned dev servers from crashed sessions
   ${colors.cyan("portless hosts sync")}              Add routes to ${HOSTS_DISPLAY} (fixes Safari)
   ${colors.cyan("portless hosts clean")}             Remove portless entries from ${HOSTS_DISPLAY}
 
@@ -1414,8 +1417,8 @@ ${colors.bold("Skip portless:")}
   PORTLESS=0 pnpm dev           # Runs command directly without proxy
 
 ${colors.bold("Reserved names:")}
-  run, get, alias, hosts, list, trust, clean, proxy are subcommands and cannot
-  be used as app names directly. Use "portless run" to infer the name,
+  run, get, alias, hosts, list, trust, clean, prune, proxy are subcommands and
+  cannot be used as app names directly. Use "portless run" to infer the name,
   or "portless --name <name>" to force any name including reserved ones.
 `);
   process.exit(0);
@@ -1560,6 +1563,68 @@ ${colors.bold("Options:")}
   }
 
   console.log(colors.green("Clean finished."));
+}
+
+async function handlePrune(args: string[]): Promise<void> {
+  if (args[1] === "--help" || args[1] === "-h") {
+    console.log(`
+${colors.bold("portless prune")} - Kill orphaned dev servers left behind by crashed portless sessions.
+
+When portless is killed with SIGKILL (kill -9) or crashes, child dev servers
+may survive and continue holding their ports. This command finds those orphans
+by checking routes whose owning CLI process is dead but whose port is still in
+use, then terminates them and cleans up the stale route entries.
+
+${colors.bold("Usage:")}
+  ${colors.cyan("portless prune")}
+  ${colors.cyan("portless prune --force")}     Send SIGKILL instead of SIGTERM
+
+${colors.bold("Options:")}
+  --force                Send SIGKILL instead of SIGTERM
+  --help, -h             Show this help
+`);
+    process.exit(0);
+  }
+
+  const forceKill = args.includes("--force");
+
+  const { dir } = await discoverState();
+  const store = new RouteStore(dir, {
+    onWarning: (msg) => console.warn(colors.yellow(msg)),
+  });
+
+  const stale = store.pruneStaleRoutes();
+  if (stale.length === 0) {
+    console.log("No orphaned routes found.");
+    return;
+  }
+
+  let killed = 0;
+  for (const route of stale) {
+    const pids = findPidsOnPort(route.port);
+    if (pids.length === 0) {
+      console.log(`  ${route.hostname} :${route.port} - route removed (port already free)`);
+      continue;
+    }
+    const signal = forceKill ? "SIGKILL" : "SIGTERM";
+    for (const pid of pids) {
+      try {
+        process.kill(pid, signal);
+        killed++;
+        console.log(`  ${route.hostname} :${route.port} - killed PID ${pid} (${signal})`);
+      } catch {
+        console.log(`  ${route.hostname} :${route.port} - PID ${pid} already exited`);
+      }
+    }
+  }
+
+  const routeWord = stale.length === 1 ? "route" : "routes";
+  const procWord = killed === 1 ? "process" : "processes";
+  console.log(
+    colors.green(
+      `\nPruned ${stale.length} stale ${routeWord}, killed ${killed} orphaned ${procWord}.`
+    )
+  );
 }
 
 async function handleList(): Promise<void> {
@@ -2463,6 +2528,7 @@ function spawnChildProcess(
     stdio: ["ignore", "pipe", "pipe"],
     env,
     cwd,
+    ...(isWindows ? {} : { detached: true }),
   });
 }
 
@@ -2831,6 +2897,7 @@ async function runWithTurbo(
       ...process.env,
       NODE_OPTIONS: buildNodeOptions(),
     },
+    ...(isWindows ? {} : { detached: true }),
   });
 
   const SIGKILL_TIMEOUT_MS = 5_000;
@@ -2840,18 +2907,10 @@ async function runWithTurbo(
     if (cleanedUp) return;
     cleanedUp = true;
 
-    try {
-      turboChild.kill("SIGTERM");
-    } catch {
-      // already dead
-    }
+    killTree(turboChild, "SIGTERM");
     setTimeout(() => {
       if (turboChild.exitCode === null && !turboChild.killed) {
-        try {
-          turboChild.kill("SIGKILL");
-        } catch {
-          // already dead
-        }
+        killTree(turboChild, "SIGKILL");
       }
     }, SIGKILL_TIMEOUT_MS).unref();
 
@@ -2932,20 +2991,12 @@ async function runWithDirectSpawn(
     cleanedUp = true;
 
     for (const child of children) {
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        // already dead
-      }
+      killTree(child, "SIGTERM");
     }
     setTimeout(() => {
       for (const child of children) {
         if (child.exitCode === null && !child.killed) {
-          try {
-            child.kill("SIGKILL");
-          } catch {
-            // already dead
-          }
+          killTree(child, "SIGKILL");
         }
       }
     }, SIGKILL_TIMEOUT_MS).unref();
@@ -3188,7 +3239,7 @@ async function main() {
 
   // --name flag: treat the next arg as an explicit app name, bypassing
   // subcommand dispatch. Useful when the app name collides with a reserved
-  // subcommand (run, alias, hosts, list, trust, clean, proxy).
+  // subcommand (run, alias, hosts, list, trust, clean, prune, proxy).
   if (args[0] === "--name") {
     args.shift();
     if (!args[0]) {
@@ -3245,7 +3296,7 @@ async function main() {
     return;
   }
 
-  // Global dispatch: help, version, trust, clean, list, alias, hosts, proxy
+  // Global dispatch: help, version, trust, clean, prune, list, alias, hosts, proxy
   // When `run` is used, skip these so args like "list" or "--help" are treated
   // as child-command tokens, not portless subcommands.
   if (!isRunCommand) {
@@ -3270,6 +3321,10 @@ async function main() {
     }
     if (args[0] === "clean") {
       await handleClean(args);
+      return;
+    }
+    if (args[0] === "prune") {
+      await handlePrune(args);
       return;
     }
     if (args[0] === "list") {

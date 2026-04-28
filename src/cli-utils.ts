@@ -91,6 +91,35 @@ export const SIGNAL_CODES: Record<string, number> = {
   SIGTERM: 15,
 };
 
+/**
+ * Kill a child process and its entire process tree. On Unix, when the child
+ * was spawned with `detached: true`, it leads its own process group and
+ * process.kill(-pid) reaches every descendant. Falls back to killing just
+ * the child on Windows or when the group kill fails.
+ */
+export function killTree(
+  child: ReturnType<typeof spawn>,
+  signal: NodeJS.Signals = "SIGTERM"
+): void {
+  if (!child.pid) {
+    child.kill(signal);
+    return;
+  }
+  if (!isWindows) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // Process group may already be gone; fall through
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // Already dead
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Port configuration
 // ---------------------------------------------------------------------------
@@ -620,6 +649,35 @@ export function parsePidFromNetstat(output: string, port: number): number | null
 }
 
 /**
+ * Find all PIDs listening on the given TCP port.
+ * Uses lsof on macOS/Linux and netstat on Windows.
+ */
+export function findPidsOnPort(port: number): number[] {
+  try {
+    if (isWindows) {
+      const output = execSync("netstat -ano -p tcp", {
+        encoding: "utf-8",
+        timeout: PID_LOOKUP_TIMEOUT_MS,
+      });
+      const pid = parsePidFromNetstat(output, port);
+      return pid === null ? [] : [pid];
+    }
+
+    const output = execSync(`lsof -ti tcp:${port} -sTCP:LISTEN`, {
+      encoding: "utf-8",
+      timeout: PID_LOOKUP_TIMEOUT_MS,
+    });
+    return output
+      .trim()
+      .split("\n")
+      .map((s) => parseInt(s, 10))
+      .filter((n) => !isNaN(n) && n > 0);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Try to find the PID of a process listening on the given TCP port.
  * Uses lsof on macOS/Linux and netstat on Windows.
  * Returns null if the PID cannot be determined.
@@ -737,6 +795,9 @@ export function spawnCommand(
     }
   }
 
+  // On Unix, spawn detached so the child gets its own process group. This
+  // lets us kill the entire tree (shell + grandchild dev server) with a
+  // single process.kill(-pid, signal) instead of only the immediate child.
   const child = isWindows
     ? spawn("cmd.exe", ["/d", "/s", "/c", commandArgs.join(" ")], {
         stdio: "inherit",
@@ -745,6 +806,7 @@ export function spawnCommand(
     : spawn("/bin/sh", ["-c", commandArgs.map(shellEscape).join(" ")], {
         stdio: "inherit",
         env,
+        detached: true,
       });
 
   let exiting = false;
@@ -758,7 +820,7 @@ export function spawnCommand(
   const handleSignal = (signal: NodeJS.Signals) => {
     if (exiting) return;
     exiting = true;
-    child.kill(signal);
+    killTree(child, signal);
     cleanup();
     process.exit(128 + (SIGNAL_CODES[signal] || 15));
   };
