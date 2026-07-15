@@ -2779,12 +2779,17 @@ function startProxyServer(store, proxyPort, tld, tlsOptions, lanIp, strict) {
     }
   };
   try {
-    watcher = fs8.watch(routesPath, () => {
+    const routesDir = path8.dirname(routesPath);
+    const routesFilename = path8.basename(routesPath);
+    watcher = fs8.watch(routesDir, (_eventType, filename) => {
+      if (filename && filename.toString() !== routesFilename) return;
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(reloadRoutes, DEBOUNCE_MS);
     });
   } catch {
-    console.warn(colors_default.yellow("fs.watch unavailable; falling back to polling for route changes"));
+    console.warn(
+      colors_default.yellow("Directory watching unavailable; falling back to polling for route changes")
+    );
     pollingInterval = setInterval(reloadRoutes, POLL_INTERVAL_MS);
   }
   if (autoSyncHosts) {
