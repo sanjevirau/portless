@@ -2528,7 +2528,7 @@ function hasTurboConfig(wsRoot) {
 var chalk = colors_default;
 var HOSTS_DISPLAY = isWindows ? "hosts file" : "/etc/hosts";
 var DEBOUNCE_MS = 100;
-var POLL_INTERVAL_MS = 3e3;
+var POLL_INTERVAL_MS = 1e3;
 var EXIT_TIMEOUT_MS = 2e3;
 var SUDO_SPAWN_TIMEOUT_MS = 3e4;
 function defaultProxyConfig(tld, useHttps, lanMode) {
@@ -2727,6 +2727,15 @@ function startProxyServer(store, proxyPort, tld, tlsOptions, lanIp, strict) {
   let debounceTimer = null;
   let watcher = null;
   let pollingInterval = null;
+  const routeFileVersion = () => {
+    try {
+      const stat = fs8.statSync(routesPath);
+      return `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
+    } catch {
+      return "missing";
+    }
+  };
+  let lastRouteFileVersion = routeFileVersion();
   const autoSyncHosts = shouldAutoSyncHosts(process.env.PORTLESS_SYNC_HOSTS);
   const onMdnsError = (msg) => console.warn(chalk.yellow(msg));
   const publishCachedRoutes = () => {
@@ -2755,6 +2764,7 @@ function startProxyServer(store, proxyPort, tld, tlsOptions, lanIp, strict) {
     try {
       const previousRoutes = new Map(cachedRoutes.map((r) => [r.hostname, r.port]));
       cachedRoutes = store.loadRoutes();
+      lastRouteFileVersion = routeFileVersion();
       if (autoSyncHosts) {
         syncHostsFile(cachedRoutes.map((r) => r.hostname));
       }
@@ -2790,8 +2800,10 @@ function startProxyServer(store, proxyPort, tld, tlsOptions, lanIp, strict) {
     console.warn(
       colors_default.yellow("Directory watching unavailable; falling back to polling for route changes")
     );
-    pollingInterval = setInterval(reloadRoutes, POLL_INTERVAL_MS);
   }
+  pollingInterval = setInterval(() => {
+    if (routeFileVersion() !== lastRouteFileVersion) reloadRoutes();
+  }, POLL_INTERVAL_MS);
   if (autoSyncHosts) {
     syncHostsFile(cachedRoutes.map((r) => r.hostname));
   }
