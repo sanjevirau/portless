@@ -197,6 +197,9 @@ export function createProxyServer(options: ProxyServerOptions): ProxyServer {
         delete proxyReqHeaders[key];
       }
     }
+    // HTTP/2 carries the request host in :authority. Preserve it as the
+    // HTTP/1.1 Host header after stripping pseudo-headers for the backend.
+    proxyReqHeaders.host = getRequestHost(req);
 
     const proxyReq = http.request(
       {
