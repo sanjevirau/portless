@@ -108,8 +108,8 @@ const HOSTS_DISPLAY = isWindows ? "hosts file" : "/etc/hosts";
 /** Debounce delay (ms) for reloading routes after a file change. */
 const DEBOUNCE_MS = 100;
 
-/** Polling interval (ms) when directory watching is unavailable. */
-const POLL_INTERVAL_MS = 3000;
+/** Polling interval (ms) used as a safety net for missed directory events. */
+const POLL_INTERVAL_MS = 1000;
 
 /** Grace period (ms) for connections to drain before force-exiting the proxy. */
 const EXIT_TIMEOUT_MS = 2000;
@@ -416,6 +416,16 @@ function startProxyServer(
   let watcher: fs.FSWatcher | null = null;
   let pollingInterval: ReturnType<typeof setInterval> | null = null;
 
+  const routeFileVersion = (): string => {
+    try {
+      const stat = fs.statSync(routesPath);
+      return `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
+    } catch {
+      return "missing";
+    }
+  };
+  let lastRouteFileVersion = routeFileVersion();
+
   const autoSyncHosts = shouldAutoSyncHosts(process.env.PORTLESS_SYNC_HOSTS);
 
   const onMdnsError = (msg: string) => console.warn(chalk.yellow(msg));
@@ -452,6 +462,7 @@ function startProxyServer(
     try {
       const previousRoutes = new Map(cachedRoutes.map((r) => [r.hostname, r.port]));
       cachedRoutes = store.loadRoutes();
+      lastRouteFileVersion = routeFileVersion();
       if (autoSyncHosts) {
         syncHostsFile(cachedRoutes.map((r) => r.hostname));
       }
@@ -487,12 +498,17 @@ function startProxyServer(
       debounceTimer = setTimeout(reloadRoutes, DEBOUNCE_MS);
     });
   } catch {
-    // Directory watching may not be supported; fall back to periodic polling
+    // Directory watching may not be supported; polling below remains authoritative.
     console.warn(
       colors.yellow("Directory watching unavailable; falling back to polling for route changes")
     );
-    pollingInterval = setInterval(reloadRoutes, POLL_INTERVAL_MS);
   }
+
+  // fs.watch can silently miss atomic replacements on some platforms and filesystems.
+  // Keep a low-cost stat poll as a cross-platform safety net even when the watcher starts.
+  pollingInterval = setInterval(() => {
+    if (routeFileVersion() !== lastRouteFileVersion) reloadRoutes();
+  }, POLL_INTERVAL_MS);
 
   if (autoSyncHosts) {
     syncHostsFile(cachedRoutes.map((r) => r.hostname));
