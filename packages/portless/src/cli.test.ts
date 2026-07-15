@@ -67,6 +67,43 @@ function writeExpoShim(dir: string): void {
   fs.chmodSync(shimPath, 0o755);
 }
 
+async function requestProxy(port: number, hostname: string): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const request = http.request(
+      { host: "127.0.0.1", port, path: "/", headers: { host: hostname } },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf-8");
+        response.on("data", (chunk: string) => {
+          body += chunk;
+        });
+        response.on("end", () => resolve(body));
+      }
+    );
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+async function waitForProxyBody(
+  port: number,
+  hostname: string,
+  expectedBody: string
+): Promise<void> {
+  const deadline = Date.now() + 3000;
+  let lastBody = "";
+  while (Date.now() < deadline) {
+    try {
+      lastBody = await requestProxy(port, hostname);
+      if (lastBody === expectedBody) return;
+    } catch {
+      // The proxy or target may still be refreshing.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Expected proxy body ${expectedBody}, received ${lastBody}`);
+}
+
 async function getFreePort(): Promise<number> {
   const server = http.createServer();
   try {
@@ -1105,6 +1142,44 @@ describe("CLI", () => {
       });
       expect(stop.status).toBe(0);
       expect(stop.stdout).toContain("Proxy stopped");
+    });
+
+    it("reloads routes after repeated atomic file replacement", async () => {
+      const firstTargetPort = await getFreePort();
+      const secondTargetPort = await getFreePort();
+      const firstTarget = http.createServer((_request, response) => response.end("first"));
+      const secondTarget = http.createServer((_request, response) => response.end("second"));
+
+      await Promise.all([
+        new Promise<void>((resolve) => firstTarget.listen(firstTargetPort, "127.0.0.1", resolve)),
+        new Promise<void>((resolve) => secondTarget.listen(secondTargetPort, "127.0.0.1", resolve)),
+      ]);
+
+      const replaceRoutes = (targetPort: number) => {
+        const routesPath = path.join(tmpDir, "routes.json");
+        const temporaryPath = path.join(tmpDir, `routes-${targetPort}.tmp`);
+        fs.writeFileSync(
+          temporaryPath,
+          JSON.stringify([{ hostname: "atomic.localhost", port: targetPort, pid: 0 }])
+        );
+        fs.renameSync(temporaryPath, routesPath);
+      };
+
+      try {
+        const start = run(["proxy", "start"], { env: proxyEnv() });
+        expect(start.status).toBe(0);
+
+        replaceRoutes(firstTargetPort);
+        await waitForProxyBody(testPort, "atomic.localhost", "first");
+
+        replaceRoutes(secondTargetPort);
+        await waitForProxyBody(testPort, "atomic.localhost", "second");
+      } finally {
+        await Promise.all([
+          new Promise<void>((resolve) => firstTarget.close(() => resolve())),
+          new Promise<void>((resolve) => secondTarget.close(() => resolve())),
+        ]);
+      }
     });
   });
 
