@@ -108,7 +108,7 @@ const HOSTS_DISPLAY = isWindows ? "hosts file" : "/etc/hosts";
 /** Debounce delay (ms) for reloading routes after a file change. */
 const DEBOUNCE_MS = 100;
 
-/** Polling interval (ms) when fs.watch is unavailable. */
+/** Polling interval (ms) when directory watching is unavailable. */
 const POLL_INTERVAL_MS = 3000;
 
 /** Grace period (ms) for connections to drain before force-exiting the proxy. */
@@ -479,13 +479,18 @@ function startProxyServer(
   };
 
   try {
-    watcher = fs.watch(routesPath, () => {
+    const routesDir = path.dirname(routesPath);
+    const routesFilename = path.basename(routesPath);
+    watcher = fs.watch(routesDir, (_eventType, filename) => {
+      if (filename && filename.toString() !== routesFilename) return;
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(reloadRoutes, DEBOUNCE_MS);
     });
   } catch {
-    // fs.watch may not be supported; fall back to periodic polling
-    console.warn(colors.yellow("fs.watch unavailable; falling back to polling for route changes"));
+    // Directory watching may not be supported; fall back to periodic polling
+    console.warn(
+      colors.yellow("Directory watching unavailable; falling back to polling for route changes")
+    );
     pollingInterval = setInterval(reloadRoutes, POLL_INTERVAL_MS);
   }
 
