@@ -19,7 +19,7 @@ import {
   removeBlock,
   shouldAutoSyncHosts,
   syncHostsFile
-} from "./chunk-3IFWOJM6.js";
+} from "./chunk-MMGDY5JA.js";
 export {
   DIR_MODE,
   FILE_MODE,

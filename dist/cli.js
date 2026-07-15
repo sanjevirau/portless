@@ -13,7 +13,7 @@ import {
   parseHostname,
   shouldAutoSyncHosts,
   syncHostsFile
-} from "./chunk-3IFWOJM6.js";
+} from "./chunk-MMGDY5JA.js";
 
 // src/colors.ts
 function supportsColor() {
